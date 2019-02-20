@@ -5,10 +5,10 @@ namespace PocketSocket.Repository
 {
     public interface IMessageRepository<T>
     {
-        T Insert(Guid id, string message);
+        T Insert(string store, Guid id, string message);
 
-        void Delete(string Id);
+        void Delete(string store, string Id);
 
-        IEnumerable<T> GetAll();
+        IEnumerable<T> GetAll(string store);
     }
 }

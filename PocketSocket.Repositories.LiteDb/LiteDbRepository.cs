@@ -8,26 +8,44 @@ namespace PocketSocket.Repositories.LiteDb
 {
     public class LiteDbRepository : IMessageRepository<StoreMessage>
     {
-        private LiteCollection<BsonDocument> Store { get; set; }
+        private LiteDatabase Store = new LiteDatabase("PocketSocket.db");
+        private Dictionary<string, LiteCollection<BsonDocument>> Collection { get; set; }
         public LiteDbRepository()
         {
-            Store = new LiteDatabase("PocketSocket.db").GetCollection<BsonDocument>("Store");
-        }
-        public void Delete(string id)
-        {
-            Store.Delete(x => x.Keys.LastOrDefault() == id);
+
+            Collection = Store.GetCollectionNames().ToDictionary(x => x, x => Store.GetCollection<BsonDocument>(x));
         }
 
-        public IEnumerable<StoreMessage> GetAll()
+
+        public void Delete(string store, string id)
         {
-            return Store.FindAll().Select(x => new StoreMessage(x.Values.FirstOrDefault(),x.Values.LastOrDefault()));
+            if (!Collection.ContainsKey(store))
+            {
+                Collection.Add(store, Store.GetCollection<BsonDocument>(store));
+            }
+
+            Collection[store].Delete(x => x.Keys.LastOrDefault() == id);
         }
 
-        public StoreMessage Insert(Guid id, string message)
+        public IEnumerable<StoreMessage> GetAll(string store)
         {
+            if (!Collection.ContainsKey(store))
+            {
+                Collection.Add(store, Store.GetCollection<BsonDocument>(store));
+            }
+            return Collection[store].FindAll().Select(x => new StoreMessage(x.RawValue.LastOrDefault().Key, x.RawValue.LastOrDefault().Value.AsString));
+        }
+
+        public StoreMessage Insert(string store, Guid id, string message)
+        {
+            if (!Collection.ContainsKey(store))
+            {
+                Collection.Add(store, Store.GetCollection<BsonDocument>(store));
+            }
+
             var item = new BsonDocument();
             item.Add($"{id}", new BsonValue(message));
-            Store.Insert(item);
+            Collection[store].Insert(item);
 
             return new StoreMessage($"{id}", message);
         }

@@ -1,4 +1,5 @@
-﻿using PocketSocket.Common.Interfaces;
+﻿using PocketSocket.Common;
+using PocketSocket.Common.Interfaces;
 using PocketSocket.Container.Default;
 using System;
 using System.Collections.Generic;
@@ -21,7 +22,7 @@ namespace PocketSocket.Resolver
             return MessageTypes.FirstOrDefault(x => x.Name == typeName);
         }
 
-        public void Handle(Type type, ISocketMessage message, IHandlerContext context)
+        public void Handle(Type type, ISocketMessage message, StateObject context)
         {
             Container.Handle(type, message, context);
             

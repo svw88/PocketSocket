@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Linq;
+using PocketSocket.Common;
 using PocketSocket.Common.Interfaces;
 using Unity;
 
@@ -13,7 +14,7 @@ namespace PocketSocket.Container.Unity
         {
             Container = container;
         }
-        public void Handle(Type type, ISocketMessage message, IHandlerContext context)
+        public void Handle(Type type, ISocketMessage message, StateObject context)
         {
             var serviceType = typeof(IHandleMessage<>).MakeGenericType(type);
 

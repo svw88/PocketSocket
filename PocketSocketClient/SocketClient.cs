@@ -12,7 +12,7 @@ namespace PocketSocket.Client
 {
     public class SocketClient : SocketBase
     {
-
+        internal protected Guid ClientId { get; set; }
         internal protected IPEndPoint RemoteEndpointAddress { get; set; }
 
         internal protected const int port = 11000;
@@ -26,11 +26,11 @@ namespace PocketSocket.Client
 
         public override event EventHandler<ConnectedEventArgs> Connected;
 
-        internal protected SocketClient(IPHostEntry info) : base(info)
+        internal protected SocketClient(IPHostEntry info, Guid clientId) : base(info)
         {
-
+            ClientId = clientId;
             RemoteEndpointAddress = new IPEndPoint(info.AddressList[0], 9000);
-
+            WorkSockets.Add(("Store", Listener));
         }
 
         public override void Start()
@@ -39,7 +39,7 @@ namespace PocketSocket.Client
             try
             {
                 // Connect to the remote endpoint.  
-                WorkSocket.BeginConnect(RemoteEndpointAddress,
+                WorkSockets.FirstOrDefault().WorkSocket.BeginConnect(RemoteEndpointAddress,
                     new AsyncCallback(ConnectCallback), this);
                 connectDone.WaitOne();
 
@@ -56,7 +56,9 @@ namespace PocketSocket.Client
             {
                 var listener = (SocketClient)ar.AsyncState;
                 // Complete the connection.  
-                listener.WorkSocket.EndConnect(ar);
+                listener.WorkSockets.FirstOrDefault().WorkSocket.EndConnect(ar);
+
+              
 
                 Console.WriteLine("Socket connected to {0}",
                     RemoteEndpointAddress.ToString());
@@ -64,15 +66,19 @@ namespace PocketSocket.Client
                 // Signal that the connection has been made.  
                 connectDone.Set();
 
+             
+                // Begin sending the data to the remote device.  
+                Send($"ConnectionId={ClientId}<EOF>", 0);
+
                 StateObject state = new StateObject
                 {
                     workSocket = this
                 };
-                // Begin receiving the data from the remote device.  
-                WorkSocket.BeginReceive(state.buffer, 0, StateObject.BufferSize, 0,
-                    new AsyncCallback(ReadCallback), state);
 
-                var docs = Store.GetAll();
+                // Begin receiving the data from the remote device.  
+                WorkSockets.FirstOrDefault().WorkSocket.BeginReceive(state.buffer, 0, StateObject.BufferSize, 0,
+                    new AsyncCallback(ReadCallback), state);
+                var docs = Store.GetAll(WorkSockets.FirstOrDefault().Id);
 
                 foreach (var item in docs.Select(x => new { x.RawValue.Key, Value = x.RawValue.Value.Replace("<EOF>", string.Empty) }))
                 {
@@ -88,15 +94,16 @@ namespace PocketSocket.Client
                     }
 
 
-                    Send(responseObject, Guid.Parse(item.Key));
+                    Send(responseObject, 0, Guid.Parse(item.Key));
                 }
+
 
                 var args = new ConnectedEventArgs
                 {
-                    HandlerContext = this
+                    State = state
                 };
 
-                Connected?.Invoke(args.HandlerContext, args);
+                Connected?.Invoke(args.State, args);
             }
             catch (Exception)
             {
@@ -104,9 +111,9 @@ namespace PocketSocket.Client
             }
         }
 
-        public static IPocketSocket Create()
+        public static IPocketSocket Create(Guid clientId)
         {
-            return new SocketClient(Dns.GetHostEntry("localhost"));
+            return new SocketClient(Dns.GetHostEntry("localhost"), clientId);
         }
 
 

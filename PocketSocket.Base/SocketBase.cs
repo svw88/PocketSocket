@@ -4,7 +4,9 @@ using PocketSocket.Repositories.LiteDb;
 using PocketSocket.Repository;
 using PocketSocket.Resolver;
 using System;
+using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Net;
 using System.Net.Sockets;
 using System.Text;
@@ -18,13 +20,15 @@ namespace PocketSocket.Base
 
         internal protected IMessageRepository<StoreMessage> Store { get; set; }
 
-        internal protected Socket WorkSocket = null;
+        internal protected Socket Listener = null;
 
-        public abstract event EventHandler<ConnectedEventArgs> Connected;
+        internal protected List<(string Id, Socket WorkSocket)> WorkSockets = new List<(string Id, Socket WorkSocket)>();
+
+        public virtual event EventHandler<ConnectedEventArgs> Connected;
 
         public SocketBase(IPHostEntry info)
         {
-            WorkSocket = new Socket(info.AddressList[0].AddressFamily, SocketType.Stream, ProtocolType.Tcp);
+            Listener = new Socket(info.AddressList[0].AddressFamily, SocketType.Stream, ProtocolType.Tcp);
 
             var assemblies = AppDomain.CurrentDomain.GetAssemblies();
 
@@ -38,7 +42,7 @@ namespace PocketSocket.Base
             Resolver.Container = container;
         }
 
-        public void Send(object message, Guid? id = null)
+        public void Send(object message, int socketId, Guid? id = null)
         {
             string data = string.Empty;
 
@@ -56,7 +60,7 @@ namespace PocketSocket.Base
                     id = Guid.NewGuid();
                     data = $"{id}|{stream.ToString()}|{message.GetType().Name}<EOF>";
 
-                    Store.Insert(id.Value, data);
+                    Store.Insert(WorkSockets[socketId].Id, id.Value, data);
 
                 }
                 else
@@ -70,9 +74,29 @@ namespace PocketSocket.Base
 
             byte[] byteData = Encoding.ASCII.GetBytes(data);
 
+            var state = new StateObject
+            {
+                SocketId = socketId,
+                workSocket = this
+            };
             // Begin sending the data to the remote device.  
-            WorkSocket.BeginSend(byteData, 0, byteData.Length, 0,
-                new AsyncCallback(SendCallback), this);
+            WorkSockets[socketId].WorkSocket.BeginSend(byteData, 0, byteData.Length, 0,
+                new AsyncCallback(SendCallback), state);
+        }
+
+        public void Send(string message, int socketId)
+        {
+
+            byte[] byteData = Encoding.ASCII.GetBytes(message);
+
+            var state = new StateObject
+            {
+                SocketId = socketId,
+                workSocket = this
+            };
+            // Begin sending the data to the remote device.  
+            Listener.BeginSend(byteData, 0, byteData.Length, 0,
+                new AsyncCallback(SendCallback), state);
         }
 
         internal void SendCallback(IAsyncResult ar)
@@ -80,9 +104,9 @@ namespace PocketSocket.Base
             try
             {
                 // Retrieve the socket from the state object.  
-                var handler = (SocketBase)ar.AsyncState;
+                var state = (StateObject)ar.AsyncState;
                 // Complete sending the data to the remote device.  
-                int bytesSent = handler.WorkSocket.EndSend(ar);
+                int bytesSent = ((SocketBase)state.workSocket).WorkSockets[state.SocketId].WorkSocket.EndSend(ar);
                 Console.WriteLine("Sent {0} bytes to client.", bytesSent);
 
 
@@ -104,7 +128,7 @@ namespace PocketSocket.Base
                 var state = (StateObject)ar.AsyncState;
 
                 // Read data from the client socket.   
-                int bytesRead = ((SocketBase)state.workSocket).WorkSocket.EndReceive(ar);
+                int bytesRead = ((SocketBase)state.workSocket).WorkSockets[state.SocketId].WorkSocket.EndReceive(ar);
 
                 if (bytesRead > 0)
                 {
@@ -124,12 +148,30 @@ namespace PocketSocket.Base
                         while (content.IndexOf("<EOF>") > -1)
                         {
 
+                            if (content.IndexOf("ConnectionId=") > -1 && content.IndexOf("<EOF>") > content.IndexOf("ConnectionId="))
+                            {
+
+                                var id = content.Substring(content.IndexOf("ConnectionId=") + 13, 36);
+
+                                ((SocketBase)state.workSocket).WorkSockets[state.SocketId] = (id, ((SocketBase)state.workSocket).WorkSockets[state.SocketId].WorkSocket);
+
+                                var args = new ConnectedEventArgs
+                                {
+                                    State = state
+                                };
+
+                                OnConnected(args);
+
+                                content = content.Substring(content.IndexOf("<EOF>") + 5, content.Length - (content.IndexOf("<EOF>") + 5));
+                                continue;
+                            }
+
                             if (content.IndexOf("Id=") > -1 && content.IndexOf("<EOF>") > content.IndexOf("Id="))
                             {
 
                                 var id = content.Substring(content.IndexOf("Id=") + 3, 36);
 
-                                Store.Delete(id);
+                                Store.Delete(WorkSockets[state.SocketId].Id, id);
 
 
 
@@ -137,29 +179,29 @@ namespace PocketSocket.Base
                                 continue;
                             }
                             // Echo the data back to the client.  
-                            CreateAndSendObject(content.Substring(0, content.IndexOf("<EOF>")), ((SocketBase)state.workSocket));
+                            CreateAndSendObject(content.Substring(0, content.IndexOf("<EOF>")), state);
 
 
                             byte[] byteData = Encoding.ASCII.GetBytes($"Id={content.Split('|')[0]}<EOF>");
 
                             content = content.Substring(content.IndexOf("<EOF>") + 5, content.Length - (content.IndexOf("<EOF>") + 5));
 
-                            ((SocketBase)state.workSocket).WorkSocket.BeginSend(byteData, 0, byteData.Length, 0,
-                                new AsyncCallback(SendCallback), state.workSocket);
+                            ((SocketBase)state.workSocket).WorkSockets[state.SocketId].WorkSocket.BeginSend(byteData, 0, byteData.Length, 0,
+                                new AsyncCallback(SendCallback), state);
 
 
                         }
 
                         state.sb.Clear().Append(content);
 
-                        ((SocketBase)state.workSocket).WorkSocket.BeginReceive(state.buffer, 0, StateObject.BufferSize, 0,
+                        ((SocketBase)state.workSocket).WorkSockets[state.SocketId].WorkSocket.BeginReceive(state.buffer, 0, StateObject.BufferSize, 0,
                         new AsyncCallback(ReadCallback), state);
 
                     }
                     else
                     {
                         // Not all data received. Get more.  
-                        ((SocketBase)state.workSocket).WorkSocket.BeginReceive(state.buffer, 0, StateObject.BufferSize, 0,
+                        ((SocketBase)state.workSocket).WorkSockets[state.SocketId].WorkSocket.BeginReceive(state.buffer, 0, StateObject.BufferSize, 0,
                         new AsyncCallback(ReadCallback), state);
                     }
 
@@ -175,7 +217,7 @@ namespace PocketSocket.Base
 
         }
 
-        internal void CreateAndSendObject(string response, SocketBase handler)
+        internal void CreateAndSendObject(string response, StateObject handler)
         {
             var message = response.Split('|')[1];
 
@@ -204,10 +246,34 @@ namespace PocketSocket.Base
 
         }
 
+        protected virtual void OnConnected(ConnectedEventArgs e)
+        {
+
+            var docs = Store.GetAll(WorkSockets[e.State.SocketId].Id);
+
+            foreach (var item in docs.Select(x => new { x.RawValue.Key, Value = x.RawValue.Value.Replace("<EOF>", string.Empty) }))
+            {
+                var type = Resolver.GetMessageType(item.Value.ToString().Split('|').Last());
+                var ser = new XmlSerializer(type);
+
+                object responseObject;
+
+                using (var stream = new StringReader(item.Value.Split('|')[1]))
+                {
+                    responseObject = ser.Deserialize(stream);
+
+                }
+                e.State.workSocket.Send(responseObject, e.State.SocketId, Guid.Parse(item.Key));
+            }
+
+            Connected?.Invoke(e.State, e);
+        }
+
         public void Shutdown()
         {
-            WorkSocket.Shutdown(SocketShutdown.Both);
-            WorkSocket.Close();
+            WorkSockets.ForEach(x => x.WorkSocket.Shutdown(SocketShutdown.Both));
+            WorkSockets.ForEach(x => x.WorkSocket.Close());
+
         }
 
         public abstract void Start();

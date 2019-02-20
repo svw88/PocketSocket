@@ -2,10 +2,10 @@
 using PocketSocket.Common;
 using PocketSocket.Common.Interfaces;
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Net;
-using System.Net.Sockets;
 using System.Threading;
 using System.Xml.Serialization;
 
@@ -13,14 +13,16 @@ namespace PocketSocket.Server
 {
     public class SocketServer : SocketBase
     {
+        public List<int> SocketIds { get; set; }
         // Thread signal.  
         public static ManualResetEvent allDone = new ManualResetEvent(false);
-
-        public override event EventHandler<ConnectedEventArgs> Connected;
         private SocketServer(IPHostEntry info) : base(info)
         {
 
-            WorkSocket.Bind(new IPEndPoint(info.AddressList[0], 9000));
+            Listener.Bind(new IPEndPoint(info.AddressList[0], 9000));
+            Listener.Listen(2);
+            SocketIds = new List<int>() { 0 };
+
 
         }
 
@@ -36,19 +38,23 @@ namespace PocketSocket.Server
             try
             {
 
-                WorkSocket.Listen(1);
+
 
                 // Set the event to nonsignaled state.  
                 allDone.Reset();
-
+                StateObject state = new StateObject
+                {
+                    workSocket = this
+                };
                 // Start an asynchronous socket to listen for connections.  
                 Console.WriteLine("Waiting for a connection...");
-                WorkSocket.BeginAccept(
+                Listener.BeginAccept(
                     new AsyncCallback(AcceptCallback),
-                    WorkSocket);
+                    state);
 
                 // Wait until a connection is made before continuing.  
                 allDone.WaitOne();
+
             }
             catch (Exception)
             {
@@ -68,50 +74,28 @@ namespace PocketSocket.Server
             allDone.Set();
 
 
-            Socket listener = (Socket)ar.AsyncState;
-            WorkSocket = listener.EndAccept(ar);
-
-            var args = new ConnectedEventArgs
-            {
-                HandlerContext = this
-            };
-
-            OnClientConnected(args);
+            var listener = (StateObject)ar.AsyncState;
+          
+            WorkSockets.Add(("Store", ((SocketServer)listener.workSocket).Listener.EndAccept(ar)));
 
             // Create the state object.  
             StateObject state = new StateObject
             {
+                SocketId = SocketIds.LastOrDefault(),
                 workSocket = this
             };
+          
 
-
-            WorkSocket.BeginReceive(state.buffer, 0, StateObject.BufferSize, 0,
+            WorkSockets[SocketIds.LastOrDefault()].WorkSocket.BeginReceive(state.buffer, 0, StateObject.BufferSize, 0,
                 new AsyncCallback(ReadCallback), state);
+            SocketIds.Add(SocketIds.LastOrDefault() + 1);
+            Listener.BeginAccept(
+                   new AsyncCallback(AcceptCallback),
+                   state);
         }
 
 
-        protected virtual void OnClientConnected(ConnectedEventArgs e)
-        {
-
-            var docs = Store.GetAll();
-
-            foreach (var item in docs.Select(x => new { x.RawValue.Key, Value = x.RawValue.Value.Replace("<EOF>", string.Empty) }))
-            {
-                var type = Resolver.GetMessageType(item.Value.ToString().Split('|').Last());
-                var ser = new XmlSerializer(type);
-
-                object responseObject;
-
-                using (var stream = new StringReader(item.Value.Split('|')[1]))
-                {
-                    responseObject = ser.Deserialize(stream);
-
-                }
-                e.HandlerContext.Send(responseObject, Guid.Parse(item.Key));
-            }
-
-            Connected?.Invoke(e.HandlerContext, e);
-        }
+        
 
     }
 
